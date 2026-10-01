@@ -7,6 +7,7 @@ import flixel.text.FlxText;
 import flixel.util.FlxColor;
 import haxe.io.Bytes;
 import openfl.Vector;
+import openfl.display.BitmapData;
 import openfl.events.SampleDataEvent;
 import openfl.geom.Rectangle;
 import openfl.media.Sound;
@@ -136,6 +137,7 @@ class PlayState extends FlxState {
 	var screen:FlxSprite;
 	var rect = new Rectangle(0, 0, 256, 224);
 	var buf = new Vector<UInt>(256 * 224, true);
+	var stallTicks = 0;
 	var sound:Sound;
 	var channel:SoundChannel;
 
@@ -157,6 +159,8 @@ class PlayState extends FlxState {
 	var dbgFrameMs = 0.0;
 	var termBuf = new StringBuf();
 	var termN = 0;
+	var lastMx = 0;
+	var lastMy = 0;
 
 	override public function create():Void {
 		super.create();
@@ -168,7 +172,8 @@ class PlayState extends FlxState {
 			showPrompt();
 			return;
 		}
-		FlxG.mouse.visible = false;
+		FlxG.mouse.load(crosshair(), 1, -8, -8);
+		FlxG.mouse.visible = true;
 
 		screen = new FlxSprite(0, 0);
 		screen.makeGraphic(256, 224, 0xFF000000, true);
@@ -208,6 +213,34 @@ class PlayState extends FlxState {
 			js.Syntax.code("console.log({0})", Std.string(v));
 			#end
 		}
+	}
+
+	static function crosshair():BitmapData {
+		var b = new BitmapData(17, 17, true, 0x00000000);
+		b.fillRect(new Rectangle(7, 0, 3, 17), 0xFF000000);
+		b.fillRect(new Rectangle(0, 7, 17, 3), 0xFF000000);
+		b.fillRect(new Rectangle(8, 1, 1, 15), 0xFFFFFFFF);
+		b.fillRect(new Rectangle(1, 8, 15, 1), 0xFFFFFFFF);
+		return b;
+	}
+
+	function updateZapper():Void {
+		var mx = FlxG.mouse.screenX;
+		var my = FlxG.mouse.screenY;
+		if (mx != lastMx || my != lastMy || FlxG.mouse.pressed)
+			nes.zapper = true;
+		lastMx = mx;
+		lastMy = my;
+		var nx = Math.floor(mx / screen.scale.x);
+		var ny = Math.floor(my / screen.scale.y);
+		if (nx < 0 || nx >= 256 || ny < 0 || ny >= 224) {
+			nes.zx = -1;
+			nes.zy = -1;
+		} else {
+			nes.zx = nx;
+			nes.zy = ny + 8;
+		}
+		nes.zTrig = FlxG.mouse.pressed;
 	}
 
 	function showPrompt():Void {
@@ -364,6 +397,28 @@ class PlayState extends FlxState {
 		blitFrame();
 	}
 
+	function runPaced():Void {
+		if (!nes.audioLive) {
+			runEmu();
+			return;
+		}
+		if (!nes.canRunFrame() && stallTicks < 8) {
+			stallTicks++;
+			return;
+		}
+		stallTicks = 0;
+		runEmu();
+		var extra = 0;
+		while (extra < 2 && nes.needsFrame()) {
+			nes.runFrame();
+			extra++;
+		}
+		if (extra > 0) {
+			debugStreamEvents();
+			blitFrame();
+		}
+	}
+
 	function blitFrame():Void {
 		var f = nes.frame;
 		for (i in 0...buf.length)
@@ -412,10 +467,11 @@ class PlayState extends FlxState {
 			| (k.LEFT ? 64 : 0)
 			| (k.RIGHT ? 128 : 0);
 
+		updateZapper();
 		debugInput();
 
 		if (!dbgOn || !dbgView.paused)
-			runEmu();
+			runPaced();
 
 		if (dbgOn) {
 			dbgView.fps = elapsed > 0 ? 1.0 / elapsed : 0.0;
